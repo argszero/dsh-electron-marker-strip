@@ -1,0 +1,36 @@
+# The @argszero/dsh-electron-marker-strip bundle patch: mount and go.
+#
+# Discussion #9920 (and its earlier duplicate #9599) reports that launching an
+# Electron-based editor from dsh makes it start as a Node interpreter and fail
+# with a 502. The cause is in the shared scrub: every child starts from
+# scrubbedParentEnv() (packages/subprocess/subprocess/src/index.ts:66), which
+# keeps a parent name unless it matches SENSITIVE_ENV_PATTERN (:47,
+# /KEY|PASSWORD|SECRET|TOKEN/i) or carries the DSH_ prefix. ELECTRON_RUN_AS_NODE
+# matches neither, so the desktop host hands it to every child it spawns —
+# including the editor it launches through
+# packages/host/open-in-app/src/resolver.ts:80, which builds the launch
+# environment as `{ ...scrubbedParentEnv(), ...options.env }`.
+#
+# The correct fix is one line in core: that pattern should carry
+# ELECTRON_RUN_AS_NODE, the way the tree's own desktop scripts already do
+# (/KEY|SECRET|TOKEN|PASSWORD|^NODE_OPTIONS$|^ELECTRON_RUN_AS_NODE$/iu). This
+# patch is the mitigation a plugin can offer an already-shipped desktop host.
+#
+# It works because scrubbedParentEnv() reads Object.entries(process.env) at
+# spawn time (:68), not at module load: deleting the name from this process
+# covers every child spawned afterwards, whatever component spawns it, without
+# touching the spawn path. The value is put back when the scope is torn down.
+#
+# Nothing in the tree depends on the leak. Every in-tree launcher that needs the
+# marker writes it explicitly AFTER the scrub — desktop-host/src/cli.ts:21,
+# desktop-host/src/index.ts:36, desktop/src/node-environment.ts:15,
+# host/open-in-app/src/resolver.ts:584,
+# experimental/speech-to-text-sensevoice/src/recognizer.ts:265 — which is why
+# removing it from the base breaks nothing.
+#
+# No `inject` is declared: process.env is not a cordis service, so there is
+# nothing to wait for and the strip is in force as soon as the fiber activates.
+
+- insert:
+    - id: electron-marker-strip
+      name: '@argszero/dsh-electron-marker-strip'
