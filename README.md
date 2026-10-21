@@ -56,7 +56,7 @@ delete process.env.ELECTRON_RUN_AS_NODE   // 'ELECTRON_RUN_AS_NODE' in process.e
 assignment, and a child would then receive a *defined* marker — worse than not
 touching it.
 
-## Nothing in the tree depends on the leak
+## What in the tree needs the marker, and why the fix must be scoped
 
 Every in-tree launcher that genuinely needs the marker writes it explicitly
 **after** the scrub:
@@ -69,8 +69,33 @@ Every in-tree launcher that genuinely needs the marker writes it explicitly
 | `packages/host/open-in-app/src/resolver.ts` | `:80`, value at `:584` |
 | `packages/experimental/speech-to-text-sensevoice/src/recognizer.ts` | `:265` |
 
-That is why removing it from the shared base breaks nothing — here, and in the
-upstream patch the same reasoning supports.
+**One launcher is missing from that table, and it is the reason this mitigation is
+global-scope only.** `packages/bundle/web-app/src/index.ts:135-141` spawns
+`process.execPath` — the Electron binary, in a desktop build — with
+`env: scrubbedParentEnv()` and no explicit marker:
+
+```ts
+return spawn(process.execPath, ['--input-type=module', '--eval', BROWSER_OPENER_PROGRAM, '--', url], {
+  env: scrubbedParentEnv(),
+  …
+})
+```
+
+That child needs the inherited marker to run as Node, so a blanket removal from
+the shared scrub would turn it into an Electron GUI launch, and
+`@deepseek-ai/dsh-web-app` sits in the default and headless bundle lists
+(`packages/boot/app-boot/src/profile.ts:184`, `:199`). This package deletes the
+name from `process.env`, which is global by construction: a desktop host that
+passes `--no-open` never reaches that launcher, but the risk is not zero.
+
+The scoped fix is therefore not the shared base but the one place that launches
+*foreign* programs — `launchDetachedApp` in
+`packages/host/open-in-app/src/resolver.ts`, deleting the inherited name after
+`{ ...scrubbedParentEnv(), ...options.env }`. Explicit environment still wins, so
+the GitHub Desktop adapter at `:584`, whose entry point is `resources/app/cli.js`
+and genuinely needs Node mode, keeps working. Reported upstream as
+[#10462](https://github.com/deepseek-ai/deepseek-harness/discussions/10462), which
+is the third report of this defect after #9599 and #9920.
 
 ## Install and mount
 
